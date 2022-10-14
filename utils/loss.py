@@ -48,8 +48,8 @@ def compute_distillation_output_loss(p, t_p, model, dist_loss="l2", T=20, reg_no
             c_obj_scale = t_obj_scale.unsqueeze(-1).repeat(1,
                                                            1, 1, 1, model.nc)
             if dist_loss == "kl":
-                kl_loss = DclsLoss(F.log_softmax(pi[..., 5:]/T, dim=-1),
-                                   F.softmax(t_pi[..., 5:]/T, dim=-1)) * (T * T)
+                kl_loss = DclsLoss(F.log_softmax(pi[..., 5:] / T, dim=-1),
+                                   F.softmax(t_pi[..., 5:] / T, dim=-1)) * (T * T)
                 t_lcls += torch.mean(kl_loss * c_obj_scale)
             else:
                 t_lcls += torch.mean(DclsLoss(pi[..., 5:],
@@ -202,7 +202,7 @@ class ComputeLoss:
 
                 # Objectness
                 tobj[b, a, gj, gi] = (
-                    1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
+                                             1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
 
                 # Classification
                 if self.nc > 1:  # cls loss (only if multiple classes)
@@ -219,7 +219,7 @@ class ComputeLoss:
             lobj += obji * self.balance[i]  # obj loss
             if self.autobalance:
                 self.balance[i] = self.balance[i] * \
-                    0.9999 + 0.0001 / obji.detach().item()
+                                  0.9999 + 0.0001 / obji.detach().item()
 
         if self.autobalance:
             self.balance = [x / self.balance[self.ssi] for x in self.balance]
@@ -334,8 +334,8 @@ class ComputeDstillLoss:
         and student expects the input tensor to be log probabilities! See Issue #2
         """
         T = self.T
-        KD_loss = self.KLDistillLoss(F.log_softmax(student_var/T, dim=-1),
-                                     F.softmax(teacher_var/T, dim=-1)) * (T * T)
+        KD_loss = self.KLDistillLoss(F.log_softmax(student_var / T, dim=-1),
+                                     F.softmax(teacher_var / T, dim=-1)) * (T * T)
 
         return KD_loss
 
@@ -366,7 +366,7 @@ class ComputeDstillLoss:
 
                 # Objectness
                 tobj[b, a, gj, gi] = (
-                    1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
+                                             1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
 
                 # Classification
                 if self.nc > 1:  # cls loss (only if multiple classes)
@@ -383,7 +383,7 @@ class ComputeDstillLoss:
             dloss += obji * self.balance[i]  # obj loss
             if self.autobalance:
                 self.balance[i] = self.balance[i] * \
-                    0.9999 + 0.0001 / obji.detach().item()
+                                  0.9999 + 0.0001 / obji.detach().item()
 
         if self.autobalance:
             self.balance = [x / self.balance[self.ssi] for x in self.balance]
@@ -410,7 +410,7 @@ class ComputeDstillLoss:
 
         for i in range(self.nl):
             # 一共三层
-            anchors = self.anchors[i]
+            anchors, shape = self.anchors[i], p[i].shape
             gain[2:6] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
             # Match targets to anchors
@@ -436,7 +436,7 @@ class ComputeDstillLoss:
 
             # Define
             b, c = t[:, :2].long().T  # image, class
-            logits = t[:, 6:6+nc]
+            logits = t[:, 6:6 + nc]
             gxy = t[:, 2:4]  # grid xy
             gwh = t[:, 4:6]  # grid wh
             gij = (gxy - offsets).long()
@@ -447,6 +447,7 @@ class ComputeDstillLoss:
             # image, anchor, grid indices
             indices.append(
                 (b, a, gj.clamp_(0, gain[3] - 1), gi.clamp_(0, gain[2] - 1)))
+            # indices.append((b, a, gj.clamp_(0, shape[2] - 1), gi.clamp_(0, shape[3] - 1)))  # image, anchor, grid
             tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
             anch.append(anchors[a])  # anchors
             tcls.append(c)  # class

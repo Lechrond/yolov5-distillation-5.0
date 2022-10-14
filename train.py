@@ -105,7 +105,7 @@ def train(hyp, opt, device, tb_writer=None):
         model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get(
             'anchors')).to(device)  # create
     with torch_distributed_zero_first(rank):
-        check_dataset(data_dict)  # check
+        data_dict = check_dataset(data_dict)  # check
     train_path = data_dict['train']
     test_path = data_dict['val']
 
@@ -240,24 +240,25 @@ def train(hyp, opt, device, tb_writer=None):
             # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
             # model._initialize_biases(cf.to(device))
             if plots:
-                plot_labels(labels, names, save_dir, loggers)
+                plot_labels(labels, names, save_dir)
                 if tb_writer:
                     tb_writer.add_histogram('classes', c, 0)
             if not opt.noautoanchor:
-                check_anchors(model)
+                # check_anchors(model)
+                check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             model.half().float()  # pre-reduce anchor precision
             
     if not opt.noautoanchor:
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]
         s_anchors = det.anchors  # shape = (3, 3, 2)
-        t_det = t_model.module.model[-1] if is_parallel(
-            t_model) else t_model.model[-1]
-        t_anchors = t_det.anchors  # shape = (3, 3, 2)
-        reg_norm = torch.sqrt(t_anchors / s_anchors)
-        del det, t_det
+        if opt.distill:
+            t_det = t_model.module.model[-1] if is_parallel(
+                t_model) else t_model.model[-1]
+            t_anchors = t_det.anchors  # shape = (3, 3, 2)
+            reg_norm = torch.sqrt(t_anchors / s_anchors)
+            del det, t_det
     else:
         reg_norm = None
-    print(reg_norm)
     
     # DDP mode
     if cuda and rank != -1:

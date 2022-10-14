@@ -1,5 +1,7 @@
 # YOLOv5 general utils
 
+import contextlib
+import signal
 import glob
 import logging
 import math
@@ -12,6 +14,7 @@ import time
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
+from zipfile import ZipFile
 
 import cv2
 import numpy as np
@@ -25,6 +28,10 @@ from utils.google_utils import gsutil_getsize
 from utils.metrics import fitness
 from utils.torch_utils import init_torch_seeds
 
+# Settings
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[1]  # YOLOv5 root directory
+DATASETS_DIR = ROOT.parent / 'datasets'  # YOLOv5 datasets directory
 # Settings
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
 # format short g, %precision=5
@@ -194,30 +201,110 @@ def check_file(file):
         return files[0]  # return file
 
 
-def check_dataset(dict):
+class Timeout(contextlib.ContextDecorator):
+    # Usage: @Timeout(seconds) decorator or 'with Timeout(seconds):' context manager
+    def __init__(self, seconds, *, timeout_msg='', suppress_timeout_errors=True):
+        self.seconds = int(seconds)
+        self.timeout_message = timeout_msg
+        self.suppress = bool(suppress_timeout_errors)
+
+    def _timeout_handler(self, signum, frame):
+        raise TimeoutError(self.timeout_message)
+
+    def __enter__(self):
+        signal.signal(signal.SIGALRM, self._timeout_handler)  # Set handler for SIGALRM
+        signal.alarm(self.seconds)  # start countdown for SIGALRM to be raised
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        signal.alarm(0)  # Cancel SIGALRM if it's scheduled
+        if self.suppress and exc_type is TimeoutError:  # Suppress TimeoutError
+            return True
+
+
+def try_except(func):
+    # try-except function. Usage: @try_except decorator
+    def handler(*args, **kwargs):
+        try:
+            func(*args, **kwargs)
+        except Exception as e:
+            print(e)
+
+    return handler
+
+
+def check_dataset(data, autodownload=True):
     # Download dataset if not found locally
-    val, s = dict.get('val'), dict.get('download')
-    if val and len(val):
-        val = [Path(x).resolve()
-               for x in (val if isinstance(val, list) else [val])]  # val path
+    # val, s = dict.get('val'), dict.get('download')
+    # if val and len(val):
+    #     val = [Path(x).resolve()
+    #            for x in (val if isinstance(val, list) else [val])]  # val path
+    #     if not all(x.exists() for x in val):
+    #         print('\nWARNING: Dataset not found, nonexistent paths: %s' %
+    #               [str(x) for x in val if not x.exists()])
+    #         if s and len(s):  # download script
+    #             if s.startswith('http') and s.endswith('.zip'):  # URL
+    #                 f = Path(s).name  # filename
+    #                 print(f'Downloading {s} ...')
+    #                 torch.hub.download_url_to_file(s, f)
+    #                 r = os.system(f'unzip -q {f} -d ../ && rm {f}')  # unzip
+    #             elif s.startswith('bash '):  # bash script
+    #                 print(f'Running {s} ...')
+    #                 r = os.system(s)
+    #             else:  # python script
+    #                 r = exec(s)  # return None
+    #             print('Dataset autodownload %s\n' % (
+    #                 'success' if r in (0, None) else 'failure'))  # print result
+    #         else:
+    #             raise Exception('Dataset not found.')
+    # Download (optional)
+    extract_dir = ''
+    if isinstance(data, (str, Path)) and str(data).endswith('.zip'):  # i.e. gs://bucket/dir/coco128.zip
+        download(data, dir=DATASETS_DIR, unzip=True, delete=False, curl=False, threads=1)
+        data = next((DATASETS_DIR / Path(data).stem).rglob('*.yaml'))
+        extract_dir, autodownload = data.parent, False
+
+    # Read yaml (optional)
+    if isinstance(data, (str, Path)):
+        with open(data, errors='ignore') as f:
+            data = yaml.safe_load(f)  # dictionary
+
+    # Resolve paths
+    path = Path(extract_dir or data.get('path') or '')  # optional 'path' default to '.'
+    if not path.is_absolute():
+        path = (ROOT / path).resolve()
+    for k in 'train', 'val', 'test':
+        if data.get(k):  # prepend path
+            data[k] = str(path / data[k]) if isinstance(data[k], str) else [str(path / x) for x in data[k]]
+
+    # Parse yaml
+    assert 'nc' in data, "Dataset 'nc' key missing."
+    if 'names' not in data:
+        data['names'] = [f'class{i}' for i in range(data['nc'])]  # assign class names if missing
+    train, val, test, s = (data.get(x) for x in ('train', 'val', 'test', 'download'))
+    if val:
+        val = [Path(x).resolve() for x in (val if isinstance(val, list) else [val])]  # val path
         if not all(x.exists() for x in val):
-            print('\nWARNING: Dataset not found, nonexistent paths: %s' %
-                  [str(x) for x in val if not x.exists()])
-            if s and len(s):  # download script
+            print('\nDataset not found, missing paths: %s' % [str(x) for x in val if not x.exists()])
+            if s and autodownload:  # download script
+                root = path.parent if 'path' in data else '..'  # unzip directory i.e. '../'
                 if s.startswith('http') and s.endswith('.zip'):  # URL
                     f = Path(s).name  # filename
-                    print(f'Downloading {s} ...')
+                    print(f'Downloading {s} to {f}...')
                     torch.hub.download_url_to_file(s, f)
-                    r = os.system(f'unzip -q {f} -d ../ && rm {f}')  # unzip
+                    Path(root).mkdir(parents=True, exist_ok=True)  # create root
+                    ZipFile(f).extractall(path=root)  # unzip
+                    Path(f).unlink()  # remove zip
+                    r = None  # success
                 elif s.startswith('bash '):  # bash script
                     print(f'Running {s} ...')
                     r = os.system(s)
                 else:  # python script
-                    r = exec(s)  # return None
-                print('Dataset autodownload %s\n' % (
-                    'success' if r in (0, None) else 'failure'))  # print result
+                    r = exec(s, {'yaml': data})  # return None
+                print(f"Dataset autodownload {f'success, saved to {root}' if r in (0, None) else 'failure'}\n")
             else:
                 raise Exception('Dataset not found.')
+
+    return data  # dictionary
 
 
 def download(url, dir='.', unzip=True, delete=True, curl=False, threads=1):
@@ -410,7 +497,7 @@ def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
         gain = min(img1_shape[0] / img0_shape[0],
                    img1_shape[1] / img0_shape[1])  # gain  = old / new
         pad = (img1_shape[1] - img0_shape[1] * gain) / \
-            2, (img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding
+              2, (img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding
     else:
         gain = ratio_pad[0][0]
         pad = ratio_pad[1]
